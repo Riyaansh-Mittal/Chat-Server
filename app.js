@@ -51,5 +51,8 @@ app.use(
 
 app.use(mongosanitize());
 
-app.use(xss());
+app.use((req, res, next) => {
+  req.body = xss(req.body);
+  next();
+});
 module.exports = app;
