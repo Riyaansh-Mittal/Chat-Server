@@ -4,6 +4,9 @@ const User = require("../models/user");
 const filterObj = require("../utils/filterObj");
 const crypto = require("crypto");
 const { promisify } = require("util");
+const mailService = require("../services/mailer");
+const otp = require("../Templates/otp");
+const resetPassword = require("../Templates/resetPassword");
 
 const signToken = (userID) => jwt.sign({ userID }, process.env.JWT_SECRET);
 
@@ -13,21 +16,22 @@ const signToken = (userID) => jwt.sign({ userID }, process.env.JWT_SECRET);
 
 //Register New User
 exports.register = async (req, res, next) => {
-  const { firstName, lastName, email, password, verified } = req.body;
+  const { firstName, lastName, email, password } = req.body;
 
   const filterBody = filterObj(
     req.body,
     "firstName",
     "lastName",
-    "password",
-    "email"
+    "email",
+    "password"
   ); //to make sure that if any user manipulates the request body to add any other field, it's not used
 
   //check if a verified user with given email exists
-  const existing_user = findOne({ email: email });
+  const existing_user = await User.findOne({ email: email });
 
   if (existing_user && existing_user.verified) {
-    res.status(400).json({
+    // user with this email already exists, Please login
+    return res.status(400).json({
       status: "error",
       message: "Email is already in use. Please login",
     });
@@ -38,9 +42,9 @@ exports.register = async (req, res, next) => {
       { new: true }, //so this new entry and new id, not the old the
       { validateModifiedOnly: true } //so that validations in fields run only if those particular fields are updated, else not
     );
-
     //generate OTP and send email to user
     req.userId = existing_user._id; //add new id to request body before sending to next controller or middleware
+
     next();
   } else {
     //if user record is not available in DB
@@ -48,12 +52,13 @@ exports.register = async (req, res, next) => {
 
     //generate OTP and send user to email
     req.userId = newUser._id; //add new id to request body before sending to next controller or middleware
+
     next();
   }
 };
 
 exports.sendOTP = async (req, res, next) => {
-  const { userId } = req.body;
+  const { userId } = req;
   const new_otp = otpGenerator.generate(6, {
     upperCaseAlphabets: false,
     lowerCaseAlphabets: false,
@@ -62,12 +67,21 @@ exports.sendOTP = async (req, res, next) => {
 
   const otp_expiry_time = Date.now() + 10 * 60 * 1000; // 10 minutes after oto is sent
 
-  await User.findByIdAndUpdate(userId, {
-    otp: new_otp,
-    otp_expiry_time,
+  const user = await User.findByIdAndUpdate(userId, {
+    otp_expiry_time: otp_expiry_time,
   });
 
+  user.otp = new_otp.toString();
+  await user.save({ new: true, validateModifiedOnly: true });
+
   // TODO Send Email
+  mailService.sendEmail({
+    email: user.email,
+    subject: "Verification OTP",
+    html: otp(user.firstName, new_otp),
+    attachments: [],
+  });
+
   res.status(200).json({
     status: "success",
     message: "OTP Sent Successfully",
@@ -84,9 +98,16 @@ exports.verifyOTP = async (req, res, next) => {
   });
 
   if (!user) {
-    res.status(400).json({
+    return res.status(400).json({
       status: "error",
       message: "Email is invalid or OTP expired",
+    });
+  }
+
+  if (user.verified) {
+    return res.status(400).json({
+      status: "error",
+      message: "Email is already verified",
     });
   }
 
@@ -95,6 +116,7 @@ exports.verifyOTP = async (req, res, next) => {
       status: "error",
       message: "OTP is incorrect",
     });
+    return;
   }
 
   //OTP is correct
@@ -104,9 +126,10 @@ exports.verifyOTP = async (req, res, next) => {
 
   const token = signToken(user._id);
 
-  res.status.json({
+  res.status(200).json({
     status: "success",
     message: "OTP verified successfully!",
+    token,
   });
 };
 
@@ -117,36 +140,46 @@ exports.login = async (req, res, next) => {
       status: "error",
       message: "Both email and password are required",
     });
+    return;
   }
   const userDoc = await User.findOne({ email: email }).select("+password"); //to also fetch password with email
-  if (!userDoc || (await userDoc.correctPassword(password, userDoc.password))) {
+  if (
+    !userDoc ||
+    !(await userDoc.correctPassword(password, userDoc.password))
+  ) {
     res.status(400).json({
       status: "error",
       message: "Email or password is incorrect",
     });
+    return;
   }
 
   const token = signToken(userDoc._id);
 
-  res.status.json({
+  res.status(200).json({
     status: "success",
     message: "Logged in successfully",
+    token,
   });
+
+  return;
 };
 
 exports.protect = async (req, res, next) => {
   // 1) Getting a token (JWT) and check if it's actually there
   let token;
   //'Bearer kjhfdjkcbdkjxcbbsceggcfbeis'
-  if(req.headers.authorization && req.headers.authorization.startsWith("Bearer")){
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith("Bearer")
+  ) {
     token = req.hears.authorization.split(" ")[1];
-
-  } else if(req.cookies.jwt){
+  } else if (req.cookies.jwt) {
     token = req.cookies.jwt;
-  } else{
-    req.status(400).json({
+  } else {
+    return req.status(400).json({
       status: "error",
-      message: "You are not logged In! Please log in to get access"
+      message: "You are not logged In! Please log in to get access",
     });
   }
 
@@ -156,22 +189,22 @@ exports.protect = async (req, res, next) => {
   // 3) Check if user still exists
   const this_user = await User.findById(decoded.userID);
 
-  if(!this_user){
-    res.status(400).json({
+  if (!this_user) {
+    return res.status(400).json({
       status: "error",
-      message: "The user doesn't exist"
-    })
+      message: "The user doesn't exist",
+    });
   }
 
   // 4) check if user changed their password after token was issued
   // Edge case: a user logs in at 10:15
   // At 10:20 another person who has the login details resets password
   // so the user who logged in at 10:15 shouldn't be able to send any requests
-  if(this_user.changedPasswordAfter(decoded.iat)){
-    res.status(400).json({
+  if (this_user.changedPasswordAfter(decoded.iat)) {
+    return res.status(400).json({
       status: "error",
-      message: "User recently updated password! Please log in again"
-    })
+      message: "User recently updated password! Please log in again",
+    });
   }
   req.user = this_user;
   next();
@@ -190,24 +223,31 @@ exports.forgotPassword = async (req, res, next) => {
 
   // 2) Generate random reset token
   const resetToken = user.createPasswordResetToken();
-
-  const resetURL = `https://tawk.com/auth/reset-password/?code=${resetToken}`;
+  await user.save({ validateBeforeSave: false });
+  console.log(resetToken);
 
   try {
-    // TODO => Send Email With Reset URL
+    const resetURL = `http://localhost:3000/auth/new-password?token=${resetToken}`;
+    // TODO => Send Email with this Reset URL to user's email address
+    mailService.sendEmail({
+      email: user.email,
+      subject: "Reset Password",
+      html: resetPassword(user.firstName, resetURL),
+      attachments: [],
+    });
+
     res.status(200).json({
       status: "success",
-      message: "Reset Password link sent to Email",
+      message: "Token sent to email!",
     });
-  } catch (error) {
+  } catch (err) {
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
-
     await user.save({ validateBeforeSave: false }); //we are passing undefined which is not a valid value
 
     //500 for server-side error
     //400 for client-side error
-    res.status(500).json({
+    return res.status(500).json({
       status: "error",
       message: "There was an error sending the email, please try again later",
     });
@@ -221,7 +261,7 @@ exports.resetPassword = async (req, res, next) => {
 
   const hashedToken = crypto
     .createHash("sha256")
-    .update(req.params.token)
+    .update(req.body.token)
     .digest("hex");
 
   const user = await User.findOne({
@@ -235,7 +275,7 @@ exports.resetPassword = async (req, res, next) => {
   //2: user is out of 10 minutes time window
 
   if (!user) {
-    res.status(400).json({
+    return res.status(400).json({
       status: 400,
       message: "Token is Invalid or Expired",
     });
@@ -243,7 +283,7 @@ exports.resetPassword = async (req, res, next) => {
 
   // 3) Update user's password and set resetToken & expiry to undefined
   user.password = req.body.password;
-  user.passwordConfirm = req.body.conformPassword;
+  user.passwordConfirm = req.body.passwordConfirm;
   user.passwordResetToken = undefined;
   user.passwordResetExpires = undefined;
 
@@ -254,8 +294,9 @@ exports.resetPassword = async (req, res, next) => {
 
   // TODO => Send an emial to suer informing about password change
 
-  res.status.json({
+  res.status(200).json({
     status: "success",
     message: "Password Reseted Successfully",
+    token,
   });
 };

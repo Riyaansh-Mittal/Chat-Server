@@ -1,5 +1,7 @@
 const express = require("express");
 
+const routes = require("./routes");
+
 const morgan = require("morgan"); //HTTP request logger middleware for node.js
 
 const rateLimit = require("express-rate-limit"); //rate-limiting middleware for APIs
@@ -20,13 +22,13 @@ app.use(
   cors({
     origin: "*",
     methods: ["GET", "POST", "PATCH", "DELETE", "PUT"],
-    credentials: true //access control allow to let front-end see TLS certificates, cookies, etc
+    credentials: true, //access control allow to let front-end see TLS certificates, cookies, etc
   })
 );
 
 app.use(express.json({ limit: "10kb" })); // by default, it is 100kb
-app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
 
 app.use(helmet());
 
@@ -52,7 +54,17 @@ app.use(
 app.use(mongosanitize());
 
 app.use((req, res, next) => {
-  req.body = xss(req.body);
+  // Sanitize request body
+  if (req.body) {
+    Object.keys(req.body).forEach(key => {
+      req.body[key] = xss(req.body[key]);
+    });
+  }
   next();
 });
+
+app.use(routes);
+
 module.exports = app;
+
+// http://localhost:3000/v1/auth/login
