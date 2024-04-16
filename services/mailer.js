@@ -5,7 +5,6 @@ dotenv.config({ path: "../.env" });
 
 async function sendMail(args) {
   try {
-
     const smtp = {
       service: "gmail",
       auth: {

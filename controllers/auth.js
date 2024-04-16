@@ -25,10 +25,9 @@ exports.register = async (req, res, next) => {
     "email",
     "password"
   ); //to make sure that if any user manipulates the request body to add any other field, it's not used
-
+  console.log(filterBody);
   //check if a verified user with given email exists
   const existing_user = await User.findOne({ email: email });
-
   if (existing_user && existing_user.verified) {
     // user with this email already exists, Please login
     return res.status(400).json({
