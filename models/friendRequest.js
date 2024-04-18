@@ -6,7 +6,7 @@ const requestSchema = new mongoose.Schema({
         ref: "User",
     },
     recepient: {
-        type: mongoose.Schema.ObjectId;
+        type: mongoose.Schema.ObjectId,
         ref: "User",
     },
     createdAt: {
