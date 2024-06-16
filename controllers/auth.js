@@ -64,7 +64,7 @@ exports.sendOTP = async (req, res, next) => {
     specialChars: false,
   });
 
-  const otp_expiry_time = Date.now() + 10 * 60 * 1000; // 10 minutes after oto is sent
+  const otp_expiry_time = Date.now() + 10 * 60 * 1000; // 10 minutes after otp is sent
 
   const user = await User.findByIdAndUpdate(userId, {
     otp_expiry_time: otp_expiry_time,
@@ -129,6 +129,7 @@ exports.verifyOTP = async (req, res, next) => {
     status: "success",
     message: "OTP verified successfully!",
     token,
+    user_id: user._id,
   });
 };
 
@@ -159,6 +160,7 @@ exports.login = async (req, res, next) => {
     status: "success",
     message: "Logged in successfully",
     token,
+    user_id: userDoc._id,
   });
 
   return;
@@ -172,7 +174,7 @@ exports.protect = async (req, res, next) => {
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
   ) {
-    token = req.hears.authorization.split(" ")[1];
+    token = req.headers.authorization.split(" ")[1];
   } else if (req.cookies.jwt) {
     token = req.cookies.jwt;
   } else {
@@ -199,7 +201,7 @@ exports.protect = async (req, res, next) => {
   // Edge case: a user logs in at 10:15
   // At 10:20 another person who has the login details resets password
   // so the user who logged in at 10:15 shouldn't be able to send any requests
-  if (this_user.changedPasswordAfter(decoded.iat)) {
+  if (this_user.passwordChangedAfter(decoded.iat)) {
     return res.status(400).json({
       status: "error",
       message: "User recently updated password! Please log in again",
